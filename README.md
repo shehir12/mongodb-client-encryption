@@ -23,6 +23,34 @@ You can install `mongodb-client-encryption` with the following:
 npm install mongodb-client-encryption
 ```
 
+### Release Integrity
+
+Releases are created automatically and signed using the [Node team's GPG key](https://pgp.mongodb.com/node-driver.asc). This applies to the git tag as well as all release packages provided as part of a GitHub release. To verify the provided packages, download the key and import it using gpg:
+
+```
+gpg --import node-driver.asc
+```
+
+The GitHub release contains a detached signature file for the NPM package (named
+`mongodb-client-encryption-X.Y.Z.tgz.sig`).
+
+The following command returns the link npm package. 
+```shell
+npm view mongodb-client-encryption@vX.Y.Z dist.tarball 
+```
+
+Using the result of the above command, a `curl` command can return the official npm package for the release.
+
+To verify the integrity of the downloaded package, run the following command:
+```shell
+gpg --verify mongodb-client-encryption-X.Y.Z.tgz.sig mongodb-client-encryption-X.Y.Z.tgz
+```
+
+>[!Note]
+No verification is done when using npm to install the package. The contents of the Github tarball and npm's tarball are identical.
+
+To verify the native `.node` packages, follow the same steps as above using `mongodb-client-encryption-X.Y.Z-platform.tgz` and the corresponding `.sig` file.
+
 ### Development
 
 #### Setup
