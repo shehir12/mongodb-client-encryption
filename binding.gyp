@@ -1,21 +1,13 @@
 {
   'targets': [{
     'target_name': 'mongocrypt',
+    'type': 'loadable_module',
     'include_dirs': [
         "<!(node -p \"require('node-addon-api').include_dir\")",
     ],
     'variables': {
-        'variables': {
-            'build_type%': "dynamic",
-        },
-        'conditions': [
-          ['OS=="win"', {
-            'build_type' : "<!(echo %BUILD_TYPE%)"
-          }],
-          ['OS!="win"', {
-            'build_type' : "<!(echo $BUILD_TYPE)",
-          }]
-        ]
+      'ARCH': '<(host_arch)',
+      'libmongocrypt_link_type%': 'static',
     },
     'sources': [
       'addon/mongocrypt.cc'
@@ -24,14 +16,7 @@
       'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
       'CLANG_CXX_LIBRARY': 'libc++',
       'MACOSX_DEPLOYMENT_TARGET': '10.12',
-      "OTHER_CFLAGS": [
-        "-arch x86_64",
-        "-arch arm64"
-      ],
-      "OTHER_LDFLAGS": [
-        "-arch x86_64",
-        "-arch arm64"
-      ]
+      'GCC_SYMBOLS_PRIVATE_EXTERN': 'YES', # -fvisibility=hidden
     },
     'cflags!': [ '-fno-exceptions' ],
     'cflags_cc!': [ '-fno-exceptions' ],
@@ -39,20 +24,23 @@
       'VCCLCompilerTool': { 'ExceptionHandling': 1 },
     },
     'conditions': [
-      ['OS=="mac"', {
-          'cflags+': ['-fvisibility=hidden'],
+      ['OS=="mac"', { 'cflags+': ['-fvisibility=hidden'] }],
+      ['_type!="static_library" and ARCH=="arm64"', {
           'xcode_settings': {
-            'GCC_SYMBOLS_PRIVATE_EXTERN': 'YES', # -fvisibility=hidden
+            "OTHER_CFLAGS": [
+              "-arch x86_64",
+              "-arch arm64"
+            ],
+            "OTHER_LDFLAGS": [
+              "-arch x86_64",
+              "-arch arm64"
+            ]
           }
       }],
-      ['build_type=="dynamic"', {
-        'link_settings': {
-          'libraries': [
-            '-lmongocrypt'
-          ]
-        }
+      ['libmongocrypt_link_type=="dynamic"', {
+        'link_settings': { 'libraries': ['-lmongocrypt'] }
       }],
-      ['build_type!="dynamic"', {
+      ['libmongocrypt_link_type=="static"', {
         'conditions': [
           ['OS!="win"', {
             'include_dirs': [

@@ -1,4 +1,5 @@
-//@ts-check
+// @ts-check
+
 import util from 'node:util';
 import process from 'node:process';
 import fs from 'node:fs/promises';
@@ -24,7 +25,9 @@ async function parseArguments() {
     libVersion: { short: 'l', type: 'string', default: pkg['mongodb:libmongocrypt'] },
     clean: { short: 'c', type: 'boolean', default: false },
     build: { short: 'b', type: 'boolean', default: false },
+    dynamic: { type: 'boolean', default: false },
     fastDownload: { type: 'boolean', default: false }, // Potentially incorrect download, only for the brave and impatient
+    'skip-bindings': { type: 'boolean', default: false },
     help: { short: 'h', type: 'boolean', default: false }
   };
 
@@ -46,6 +49,8 @@ async function parseArguments() {
     fastDownload: args.values.fastDownload,
     clean: args.values.clean,
     build: args.values.build,
+    dynamic: args.values.dynamic,
+    skipBindings: args.values['skip-bindings'],
     pkg
   };
 }
@@ -81,7 +86,7 @@ export async function cloneLibMongoCrypt(libmongocryptRoot, { url, ref }) {
   }
 }
 
-export async function buildLibMongoCrypt(libmongocryptRoot, nodeDepsRoot) {
+export async function buildLibMongoCrypt(libmongocryptRoot, nodeDepsRoot, options) {
   console.error('building libmongocrypt...');
 
   const nodeBuildRoot = resolveRoot(nodeDepsRoot, 'tmp', 'libmongocrypt-build');
@@ -115,7 +120,7 @@ export async function buildLibMongoCrypt(libmongocryptRoot, nodeDepsRoot) {
     /**
      * Where to install libmongocrypt
      * Note that `binding.gyp` will set `./deps/include`
-     * as an include path if BUILD_TYPE=static
+     * as an include path if libmongocrypt_link_type=static
      */
     DCMAKE_INSTALL_PREFIX: nodeDepsRoot
   });
@@ -125,18 +130,22 @@ export async function buildLibMongoCrypt(libmongocryptRoot, nodeDepsRoot) {
       ? toFlags({ Thost: 'x64', A: 'x64', DENABLE_WINDOWS_STATIC_RUNTIME: 'ON' })
       : [];
 
-  const MACOS_CMAKE_FLAGS =
-    process.platform === 'darwin' // The minimum macos target version we want for
+  const DARWIN_CMAKE_FLAGS =
+    process.platform === 'darwin' // The minimum darwin target version we want for
       ? toFlags({ DCMAKE_OSX_DEPLOYMENT_TARGET: '10.12' })
       : [];
 
+  const cmakeProgram = process.platform === 'win32' ? 'cmake.exe' : 'cmake';
+
   await run(
-    'cmake',
-    [...CMAKE_FLAGS, ...WINDOWS_CMAKE_FLAGS, ...MACOS_CMAKE_FLAGS, libmongocryptRoot],
-    { cwd: nodeBuildRoot }
+    cmakeProgram,
+    [...CMAKE_FLAGS, ...WINDOWS_CMAKE_FLAGS, ...DARWIN_CMAKE_FLAGS, libmongocryptRoot],
+    { cwd: nodeBuildRoot, shell: process.platform === 'win32' }
   );
-  await run('cmake', ['--build', '.', '--target', 'install', '--config', 'RelWithDebInfo'], {
-    cwd: nodeBuildRoot
+
+  await run(cmakeProgram, ['--build', '.', '--target', 'install', '--config', 'RelWithDebInfo'], {
+    cwd: nodeBuildRoot,
+    shell: process.platform === 'win32'
   });
 }
 
@@ -228,13 +237,45 @@ export async function downloadLibMongoCrypt(nodeDepsRoot, { ref, fastDownload })
   }
 }
 
+async function buildBindings(args, pkg) {
+  await fs.rm(resolveRoot('build'), { force: true, recursive: true });
+  await fs.rm(resolveRoot('prebuilds'), { force: true, recursive: true });
+
+  // install with "ignore-scripts" so that we don't attempt to download a prebuild
+  await run('npm', ['install', '--ignore-scripts']);
+  // The prebuild command will make both a .node file in `./build` (local and CI testing will run on current code)
+  // it will also produce `./prebuilds/mongodb-client-encryption-vVERSION-napi-vNAPI_VERSION-OS-ARCH.tar.gz`.
+
+  let gypDefines = process.env.GYP_DEFINES ?? '';
+  if (args.dynamic) {
+    gypDefines += ' libmongocrypt_link_type=dynamic';
+  }
+
+  gypDefines = gypDefines.trim();
+  const prebuildOptions =
+    gypDefines.length > 0
+      ? { env: { ...process.env, GYP_DEFINES: gypDefines } }
+      : undefined;
+
+  await run('npm', ['run', 'prebuild'], prebuildOptions);
+  // Compile Typescript
+  await run('npm', ['run', 'prepare']);
+
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    // The "arm64" build is actually a universal binary
+    const armTar = `mongodb-client-encryption-v${pkg.version}-napi-v4-darwin-arm64.tar.gz`;
+    const x64Tar = `mongodb-client-encryption-v${pkg.version}-napi-v4-darwin-x64.tar.gz`;
+    await fs.copyFile(resolveRoot('prebuilds', armTar), resolveRoot('prebuilds', x64Tar));
+  }
+}
+
 async function main() {
   const { pkg, ...args } = await parseArguments();
   console.log(args);
 
   const nodeDepsDir = resolveRoot('deps');
 
-  if (args.build) {
+  if (args.build && !args.dynamic) {
     const libmongocryptCloneDir = resolveRoot('_libmongocrypt');
 
     const currentLibMongoCryptBranch = await fs
@@ -252,36 +293,15 @@ async function main() {
     const isBuilt = libmongocryptBuiltVersion.trim() === args.ref;
 
     if (args.clean || !isBuilt) {
-      await buildLibMongoCrypt(libmongocryptCloneDir, nodeDepsDir);
+      await buildLibMongoCrypt(libmongocryptCloneDir, nodeDepsDir, args);
     }
-  } else {
+  } else if (!args.dynamic) {
     // Download
     await downloadLibMongoCrypt(nodeDepsDir, args);
   }
 
-  await fs.rm(resolveRoot('build'), { force: true, recursive: true });
-  await fs.rm(resolveRoot('prebuilds'), { force: true, recursive: true });
-
-  // install with "ignore-scripts" so that we don't attempt to download a prebuild
-  await run('npm', ['install', '--ignore-scripts']);
-  // The prebuild command will make both a .node file in `./build` (local and CI testing will run on current code)
-  // it will also produce `./prebuilds/mongodb-client-encryption-vVERSION-napi-vNAPI_VERSION-OS-ARCH.tar.gz`.
-  await run('npm', ['run', 'prebuild']);
-  // Compile Typescript
-  await run('npm', ['run', 'prepare']);
-
-  if (process.platform === 'darwin') {
-    // The "arm64" build is actually a universal binary
-    await fs.copyFile(
-      resolveRoot(
-        'prebuilds',
-        `mongodb-client-encryption-v${pkg.version}-napi-v4-darwin-arm64.tar.gz`
-      ),
-      resolveRoot(
-        'prebuilds',
-        `mongodb-client-encryption-v${pkg.version}-napi-v4-darwin-x64.tar.gz`
-      )
-    );
+  if (!args.skipBindings) {
+    await buildBindings(args, pkg);
   }
 }
 
